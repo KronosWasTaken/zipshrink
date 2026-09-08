@@ -100,8 +100,17 @@ Versioning is [semver](https://semver.org), automated with
 | `feat!:` or `BREAKING CHANGE:` | major — `1.0.0` → `2.0.0` |
 | `chore:`, `ci:`, `docs:`, `test:` | none |
 
-Release-please keeps an open **"chore: release X.Y.Z"** pull request with the
-generated `CHANGELOG.md` and version bump, rewriting it as commits land.
+Release-please keeps a single open **"chore: release X.Y.Z"** pull request
+with the generated `CHANGELOG.md` and version bump, rewriting it as commits
+land. Commits accumulate there, so there is no need to release per commit:
+push as many as you like and the highest bump among them wins — a `feat:`
+alongside three `fix:` commits yields one minor release, not four. Nothing
+ships until the PR is merged, and if only non-bumping commits have landed no
+PR is opened at all.
+
+Prefixes must match exactly: `feat:` counts, `feature:` and `Feat:` do not,
+and a malformed prefix silently fails to bump.
+
 Merging that PR is the release: it tags `vX.Y.Z`, publishes the GitHub
 release, then builds and attaches for linux/macOS/windows on amd64/arm64:
 
