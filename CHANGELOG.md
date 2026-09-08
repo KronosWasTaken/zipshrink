@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/KronosWasTaken/zipshrink/compare/v1.0.2...v1.0.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **ci:** grant attestations permission to the release workflow call ([6038fc0](https://github.com/KronosWasTaken/zipshrink/commit/6038fc0ae39605b1d724392ce43798fd72aebe77))
+
 ## [1.0.2](https://github.com/KronosWasTaken/zipshrink/compare/v1.0.1...v1.0.2) (2026-09-08)
 
 
