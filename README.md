@@ -67,7 +67,6 @@ go test ./...
 |------|-------------|---------|
 | `-o` | Destination directory | `<archive_name>` |
 | `-c` | Consumption threshold before chunk truncation | `100MB` |
-
 | `-k` | Keep source archive intact (disable auto-delete) | `false` |
 | `-v` | Verbose per-file extraction log | `false` |
 
@@ -85,6 +84,42 @@ go test ./...
 ├── go.mod
 └── README.md
 ```
+
+---
+
+## Releases
+
+Versioning is [semver](https://semver.org), automated with
+[release-please](https://github.com/googleapis/release-please) and driven by
+[Conventional Commits](https://www.conventionalcommits.org) on `main`:
+
+| Commit prefix | Bump |
+|---|---|
+| `fix:` | patch — `1.0.0` → `1.0.1` |
+| `feat:` | minor — `1.0.0` → `1.1.0` |
+| `feat!:` or `BREAKING CHANGE:` | major — `1.0.0` → `2.0.0` |
+| `chore:`, `ci:`, `docs:`, `test:` | none |
+
+Release-please keeps an open **"chore: release X.Y.Z"** pull request with the
+generated `CHANGELOG.md` and version bump, rewriting it as commits land.
+Merging that PR is the release: it tags `vX.Y.Z`, publishes the GitHub
+release, then builds and attaches for linux/macOS/windows on amd64/arm64:
+
+- six `.tar.gz`/`.zip` archives, each containing the binary plus both licences
+- `SHA256SUMS` and its keyless cosign signature (`SHA256SUMS.cosign.bundle`)
+- an SPDX SBOM (`zipshrink-sbom.spdx.json`)
+
+Tagging by hand (`git tag -a v1.2.3 && git push origin v1.2.3`) produces the
+same artifacts, and `workflow_dispatch` on the release workflow can rebuild
+assets for a tag that already exists.
+
+### Workflows
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | push, PR, weekly | tests on linux/macOS/windows, `gofmt`/`vet`/tidy, golangci-lint (incl. gosec), actionlint, cross-compile, fuzzing, `govulncheck` |
+| `release-please.yml` | push to `main` | maintains the release PR; calls the release workflow once a release is cut |
+| `release.yml` | tag, `workflow_call`, `workflow_dispatch` | validates semver, builds, signs, publishes |
 
 ---
 
