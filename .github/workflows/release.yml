@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
+    # Coarse on purpose: the verify job enforces strict semver.
+    tags: ["v*"]
 
 permissions:
   contents: read
