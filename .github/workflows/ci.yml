@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: [main]
+  # Release PRs only touch the changelog and version manifest, so they raise
+  # no run at all -- which also avoids the bot PR needing manual approval.
   pull_request:
+    paths-ignore:
+      - CHANGELOG.md
+      - .release-please-manifest.json
+      - README.md
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
