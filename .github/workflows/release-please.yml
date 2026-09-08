@@ -37,6 +37,9 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    # Must cover everything release.yml's jobs request, or the call is
+    # rejected before it starts.
     permissions:
       contents: write
       id-token: write
+      attestations: write
