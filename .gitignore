@@ -1,0 +1,21 @@
+# Build output
+zipshrink
+zipshrink.exe
+*.exe
+
+# Test archives and extraction output
+*.zip
+*.rar
+out_*/
+test_out/
+
+# Go tooling
+*.test
+*.out
+coverage.txt
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
