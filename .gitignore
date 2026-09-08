@@ -1,6 +1,6 @@
-# Build output
-zipshrink
-zipshrink.exe
+# Build output (root binary only -- must not match cmd/zipshrink/)
+/zipshrink
+/zipshrink.exe
 *.exe
 
 # Test archives and extraction output
