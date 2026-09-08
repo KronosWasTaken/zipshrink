@@ -12,13 +12,13 @@ import (
 // ExtractRAR extracts a single-volume RAR archive to DestinationDir while
 // shrinking the source file in chunks, the same as Extract does for ZIP.
 // Split (multi-volume) archives are not supported.
-func ExtractRAR(ctx context.Context, opts Options) (*Result, error) {
+func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	start := time.Now()
 	fi, dest, stream, err := openTruncatedSource(opts)
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	defer closeStream(stream, &err)
 
 	rr, err := rardecode.NewReader(stream)
 	if err != nil {

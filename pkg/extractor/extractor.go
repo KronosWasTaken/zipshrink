@@ -17,7 +17,6 @@ import (
 
 var ErrZipSlip = errors.New("extractor: zip slip detected")
 
-// Options configures extraction behavior and progress hooks.
 type Options struct {
 	SourcePath     string
 	DestinationDir string
@@ -27,7 +26,6 @@ type Options struct {
 	OnFile         func(name string)
 }
 
-// Result summarizes extraction metrics.
 type Result struct {
 	FilesCount int
 	BytesTotal int64
@@ -48,13 +46,15 @@ type entry struct {
 }
 
 // Extract extracts archive entries to DestinationDir while shrinking the source file in chunks.
-func Extract(ctx context.Context, opts Options) (*Result, error) {
+func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	start := time.Now()
 	fi, dest, stream, err := openTruncatedSource(opts)
 	if err != nil {
 		return nil, err
 	}
-	defer stream.Close()
+	// Close deletes the archive when DeleteArchive is set, so its failure
+	// must reach the caller rather than be reported as a clean run.
+	defer closeStream(stream, &err)
 
 	zr := streamzip.NewReader(stream)
 	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, func() (entry, io.Reader, error) {
@@ -70,6 +70,12 @@ func Extract(ctx context.Context, opts Options) (*Result, error) {
 	return buildResult(opts.DeleteArchive, fi.Size(), count, totalBytes, start), nil
 }
 
+func closeStream(stream io.Closer, err *error) {
+	if cerr := stream.Close(); cerr != nil && *err == nil {
+		*err = cerr
+	}
+}
+
 func openTruncatedSource(opts Options) (fi os.FileInfo, dest string, stream *truncator.Truncator, err error) {
 	fi, err = os.Stat(opts.SourcePath)
 	if err != nil {
@@ -83,8 +89,7 @@ func openTruncatedSource(opts Options) (fi os.FileInfo, dest string, stream *tru
 	return fi, dest, stream, err
 }
 
-// extractLoop is the shared drive loop for every archive format; next
-// reports io.EOF when the archive is exhausted.
+// next reports io.EOF when the archive is exhausted.
 func extractLoop(ctx context.Context, dest string, onFile func(string), next func() (entry, io.Reader, error)) (count int, totalBytes int64, err error) {
 	for {
 		if err := ctx.Err(); err != nil {

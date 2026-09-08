@@ -1,0 +1,54 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - perfsprint
+    - prealloc
+    - revive
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    errcheck:
+      # Best-effort cleanup whose failure must not mask the error being returned.
+      exclude-functions:
+        - os.Remove
+        - os.Chtimes
+    gosec:
+      excludes:
+        # Opening a path supplied on the command line is this tool's purpose;
+        # G304 targets services resolving untrusted request paths.
+        - G304
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        # Flags idiomatic `if err := f(); err != nil` shadowing.
+        - shadow
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      # Fixture permissions and setup errors inside t.TempDir() are not risks.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - prealloc
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

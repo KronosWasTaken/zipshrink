@@ -11,6 +11,7 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+	"math"
 	"strings"
 	"time"
 )
@@ -38,7 +39,6 @@ var (
 	dataDescSig = []byte{0x50, 0x4b, 0x07, 0x08}
 )
 
-// FileHeader describes a single entry in a ZIP archive.
 type FileHeader struct {
 	Name             string
 	Flags, Method    uint16
@@ -48,7 +48,6 @@ type FileHeader struct {
 	UncompressedSize uint64
 }
 
-// IsDir reports whether the entry is a directory.
 func (h *FileHeader) IsDir() bool {
 	return strings.HasSuffix(h.Name, "/") || strings.HasSuffix(h.Name, "\\")
 }
@@ -60,7 +59,6 @@ type Reader struct {
 	err  error
 }
 
-// NewReader wraps an io.Reader in a streaming ZIP reader.
 func NewReader(r io.Reader) *Reader {
 	br, ok := r.(*bufio.Reader)
 	if !ok {
@@ -69,7 +67,6 @@ func NewReader(r io.Reader) *Reader {
 	return &Reader{br: br}
 }
 
-// Next advances to the next entry, returning its metadata and uncompressed reader.
 func (zr *Reader) Next() (*FileHeader, io.Reader, error) {
 	if zr.err != nil {
 		return nil, nil, zr.err
@@ -164,6 +161,12 @@ type entryReader struct {
 }
 
 func newEntryReader(br *bufio.Reader, fh *FileHeader) (*entryReader, error) {
+	// Sizes come from the archive, so a hostile value must be rejected rather
+	// than wrap negative and make io.LimitReader read the entry as empty.
+	if fh.CompressedSize > math.MaxInt64 {
+		return nil, fmt.Errorf("%w: compressed size %d out of range", ErrFormat, fh.CompressedSize)
+	}
+
 	er := &entryReader{
 		br:      br,
 		hdr:     fh,
@@ -196,7 +199,7 @@ func (er *entryReader) Read(p []byte) (int, error) {
 	}
 	n, err := er.r.Read(p)
 	if n > 0 {
-		er.crc.Write(p[:n])
+		_, _ = er.crc.Write(p[:n]) // hash.Hash.Write never returns an error
 	}
 	if errors.Is(err, io.EOF) {
 		er.drained = true

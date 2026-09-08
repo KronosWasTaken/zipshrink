@@ -2,6 +2,7 @@ package truncator
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestChunkTruncator(t *testing.T) {
 			if n > 0 {
 				collected.Write(readBuf[:n])
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {

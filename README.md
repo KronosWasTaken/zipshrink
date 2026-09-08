@@ -20,12 +20,23 @@ Each truncation rewrites the remaining archive toward the front, so smaller chun
 
 ## Installation
 
-```bash
-# Build binary
-go build -o zipshrink.exe ./cmd/zipshrink
+Prebuilt binaries for linux, macOS and windows (amd64/arm64) are attached to
+each [release](../../releases). Releases are signed; verify one with:
 
-# Run tests
-go test -v ./...
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.cosign.bundle \
+  --certificate-identity-regexp '^https://github\.com/.+/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+Or build from source:
+
+```bash
+go build -o zipshrink.exe ./cmd/zipshrink
+go test ./...
 ```
 
 ---
@@ -74,3 +85,13 @@ go test -v ./...
 ├── go.mod
 └── README.md
 ```
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+RAR support uses [rardecode](https://github.com/nwaples/rardecode) (BSD 2-Clause);
+its notice is reproduced in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) and
+ships inside every release archive.

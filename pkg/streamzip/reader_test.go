@@ -3,6 +3,7 @@ package streamzip
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -40,7 +41,7 @@ func TestStreamZipReader_MultiFileDeflateWithDescriptors(t *testing.T) {
 
 	for {
 		header, reader, err := zr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -115,7 +116,7 @@ func TestStreamZipReader_StoreMethod(t *testing.T) {
 	}
 
 	_, _, nextErr := zr.Next()
-	if nextErr != io.EOF {
+	if !errors.Is(nextErr, io.EOF) {
 		t.Errorf("expected io.EOF on Next(), got %v", nextErr)
 	}
 }
@@ -147,7 +148,7 @@ func TestStreamZipReader_StoreWithDataDescriptor(t *testing.T) {
 	zr := NewReader(bytes.NewReader(zipBuf.Bytes()))
 	for {
 		hdr, r, err := zr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -187,7 +188,7 @@ func TestStreamZipReader_DrainSkippedFiles(t *testing.T) {
 	count := 0
 	for {
 		header, _, err := zr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

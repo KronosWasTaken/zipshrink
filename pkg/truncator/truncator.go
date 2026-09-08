@@ -28,7 +28,6 @@ type Truncator struct {
 	shiftBuf []byte
 }
 
-// Open initializes a Truncator for the file at path.
 func Open(path string, chunk int64, del bool, onShift func(int64, int64)) (*Truncator, error) {
 	if chunk <= 0 {
 		chunk = DefaultChunkSize
@@ -40,10 +39,8 @@ func Open(path string, chunk int64, del bool, onShift func(int64, int64)) (*Trun
 	return &Truncator{f: f, path: path, chunk: chunk, del: del, onShift: onShift}, nil
 }
 
-// Read reads from the file, triggering shift-and-truncate when reaching the
-// chunk threshold. If del is false the file is never deleted, so it's also
-// never shifted or truncated -- Read is a plain passthrough, leaving the
-// source completely unmodified.
+// With del=false nothing is shifted or truncated: Read is a plain
+// passthrough, leaving the source byte-for-byte unmodified.
 func (t *Truncator) Read(p []byte) (int, error) {
 	if t.closed {
 		return 0, ErrClosed

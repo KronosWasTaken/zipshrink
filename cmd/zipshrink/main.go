@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -17,6 +18,13 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	var (
 		dest     string
 		chunkStr string
@@ -29,25 +37,23 @@ func main() {
 	flag.BoolVar(&keep, "k", false, "Keep source archive")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: zipshrink [options] <archive.zip>\n")
+		fmt.Fprintf(os.Stderr, "Usage: zipshrink [options] <archive.zip|archive.rar>\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
 	if flag.NArg() < 1 {
 		flag.Usage()
-		os.Exit(1)
+		return errors.New("no archive given")
 	}
 
 	archive := flag.Arg(0)
 	chunkBytes, err := parseBytes(chunkStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	if chunkBytes <= 0 {
-		fmt.Fprintf(os.Stderr, "error: chunk size must be greater than zero\n")
-		os.Exit(1)
+		return errors.New("chunk size must be greater than zero")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -73,24 +79,23 @@ func main() {
 	}
 
 	var res *extractor.Result
-	switch strings.ToLower(filepath.Ext(archive)) {
+	switch ext := strings.ToLower(filepath.Ext(archive)); ext {
 	case ".rar":
 		res, err = extractor.ExtractRAR(ctx, opts)
 	case ".zip":
 		res, err = extractor.Extract(ctx, opts)
 	default:
-		fmt.Fprintf(os.Stderr, "error: unsupported archive format %q (supported: .zip, .rar)\n", filepath.Ext(archive))
-		os.Exit(1)
+		return fmt.Errorf("unsupported archive format %q (supported: .zip, .rar)", ext)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nExtraction failed: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	fmt.Printf("\nDone. Extracted %d files (%s) in %s\n", res.FilesCount, formatBytes(res.BytesTotal), res.Duration.Round(time.Millisecond))
 	if !keep {
 		fmt.Printf("Space saved: %s\n", formatBytes(res.SpaceSaved))
 	}
+	return nil
 }
 
 var byteSizePattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([A-Z]*)$`)

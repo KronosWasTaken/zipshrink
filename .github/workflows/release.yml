@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # The tag glob is coarse, so enforce real semver here and decide up
+      # front whether this is a prerelease.
+      - name: validate semver tag
+        id: semver
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if ! printf '%s' "$tag" | grep -Eq "$re"; then
+            echo "::error::tag '$tag' is not semver (want vMAJOR.MINOR.PATCH[-prerelease][+build])"
+            exit 1
+          fi
+          # Strip +build metadata first: a hyphen there is not a prerelease.
+          if printf '%s' "${tag%%+*}" | grep -q -- '-'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: go test -count=1 ./...
+    outputs:
+      prerelease: ${{ steps.semver.outputs.prerelease }}
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: build and package
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p build dist
+          # Both licences ship inside every archive: rardecode is BSD and
+          # requires its notice to accompany binary redistribution.
+          cp LICENSE THIRD_PARTY_LICENSES README.md build/
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${t%/*}"; goarch="${t#*/}"
+            bin=zipshrink; [ "$goos" = windows ] && bin=zipshrink.exe
+            name="zipshrink_${GITHUB_REF_NAME}_${goos}_${goarch}"
+            GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags="-s -w" -o "build/$bin" ./cmd/zipshrink
+            if [ "$goos" = windows ]; then
+              (cd build && zip -q "../dist/${name}.zip" "$bin" LICENSE THIRD_PARTY_LICENSES README.md)
+            else
+              tar -czf "dist/${name}.tar.gz" -C build "$bin" LICENSE THIRD_PARTY_LICENSES README.md
+            fi
+            rm -f "build/$bin"
+          done
+          (cd dist && sha256sum zipshrink_* > SHA256SUMS)
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write # keyless cosign signing via the OIDC token
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - uses: anchore/sbom-action@v0.24.2
+        with:
+          format: spdx-json
+          artifact-name: zipshrink-sbom.spdx.json
+          output-file: dist/zipshrink-sbom.spdx.json
+
+      - uses: sigstore/cosign-installer@v4.1.2
+
+      # Signing the checksum file covers every artifact it lists, so one
+      # signature is enough to verify the whole release.
+      - name: sign checksums
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle dist/SHA256SUMS.cosign.bundle \
+            dist/SHA256SUMS
+
+      # release-please creates the release itself when its PR merges, so
+      # attach to an existing one and only create it for a manual tag.
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            flags=(--generate-notes)
+            [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
+            gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"
+          fi
