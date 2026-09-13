@@ -127,7 +127,8 @@ jobs:
           artifact-name: zipshrink-sbom.spdx.json
           output-file: dist/zipshrink-sbom.spdx.json
 
-      - uses: sigstore/cosign-installer@v4
+      # sigstore publishes exact versions only; there is no floating v4 tag.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       # Signing the checksum file covers every artifact it lists, so one
       # signature is enough to verify the whole release.
