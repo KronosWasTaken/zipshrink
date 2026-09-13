@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/KronosWasTaken/zipshrink/compare/v1.0.3...v1.1.0) (2026-09-13)
+
+
+### Features
+
+* reclaim space by punching holes and decode entries in parallel ([c54845c](https://github.com/KronosWasTaken/zipshrink/commit/c54845c1a440a5737adff027711aee8095acb2c6))
+
+
+### Bug Fixes
+
+* bound zero-length entries so directories do not consume the archive ([6bbff37](https://github.com/KronosWasTaken/zipshrink/commit/6bbff3708b3d0b6f1e392095b3ee9b355cd700af))
+
 ## [1.0.3](https://github.com/KronosWasTaken/zipshrink/compare/v1.0.2...v1.0.3) (2026-09-08)
 
 
