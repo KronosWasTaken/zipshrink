@@ -3,6 +3,8 @@ reproduced below as required.
 
 ================================================================================
 github.com/nwaples/rardecode/v2 -- BSD 2-Clause
+Used via github.com/KronosWasTaken/rardecode/v2, a fork carrying one fix that
+has not yet been released upstream. Unmodified apart from that fix.
 ================================================================================
 
 Copyright (c) 2015, Nicholas Waples

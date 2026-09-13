@@ -6,7 +6,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/nwaples/rardecode/v2"
+	// Fork of github.com/nwaples/rardecode carrying a fix for matches that
+	// run past the end of the decode window; drop it once that lands upstream.
+	rardecode "github.com/KronosWasTaken/rardecode/v2"
 )
 
 // ExtractRAR extracts a single-volume RAR archive to DestinationDir while
