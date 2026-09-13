@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/KronosWasTaken/zipshrink/compare/v1.2.0...v1.3.0) (2026-09-13)
+
+
+### Features
+
+* **progress:** report both archive and output throughput ([e39538a](https://github.com/KronosWasTaken/zipshrink/commit/e39538a0c8b517255604f48fee49e79e11a960f3))
+
 ## [1.2.0](https://github.com/KronosWasTaken/zipshrink/compare/v1.1.0...v1.2.0) (2026-09-13)
 
 
