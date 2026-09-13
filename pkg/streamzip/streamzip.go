@@ -4,16 +4,17 @@ package streamzip
 import (
 	"bufio"
 	"bytes"
-	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"hash/crc32"
 	"io"
 	"math"
 	"strings"
 	"time"
+
+	// Drop-in for compress/flate with a markedly faster decoder.
+	"github.com/klauspost/compress/flate"
 )
 
 const (
@@ -52,17 +53,51 @@ func (h *FileHeader) IsDir() bool {
 	return strings.HasSuffix(h.Name, "/") || strings.HasSuffix(h.Name, "\\")
 }
 
-// Reader reads ZIP archives sequentially from an unseekable stream.
+const readBufSize = 512 << 10
+
+// Reader reads ZIP archives sequentially from an unseekable stream. Only one
+// entry is live at a time, so the per-entry machinery below is allocated
+// once and reused rather than per file.
 type Reader struct {
-	br   *bufio.Reader
-	curr *entryReader
-	err  error
+	br       *bufio.Reader
+	curr     *entryReader
+	err      error
+	entry    entryReader
+	flate    io.ReadCloser
+	limit    io.LimitedReader
+	drainBuf []byte
+	nameBuf  []byte
+	extraBuf []byte
+	raw      bool
+}
+
+// SetRaw makes Next hand back deflate entries of known size still compressed,
+// with Entry reporting raw. The caller must then decompress and verify the
+// CRC itself, which is what allows decoding to happen off this goroutine.
+func (zr *Reader) SetRaw(raw bool) { zr.raw = raw }
+
+// Raw reports whether the reader returned by the last Next is still
+// compressed.
+func (zr *Reader) Raw() bool { return zr.curr != nil && zr.curr.raw }
+
+func (zr *Reader) grow(n int) []byte {
+	if cap(zr.nameBuf) < n {
+		zr.nameBuf = make([]byte, n)
+	}
+	return zr.nameBuf[:n]
+}
+
+func (zr *Reader) growExtra(n int) []byte {
+	if cap(zr.extraBuf) < n {
+		zr.extraBuf = make([]byte, n)
+	}
+	return zr.extraBuf[:n]
 }
 
 func NewReader(r io.Reader) *Reader {
 	br, ok := r.(*bufio.Reader)
 	if !ok {
-		br = bufio.NewReaderSize(r, 64*1024)
+		br = bufio.NewReaderSize(r, readBufSize)
 	}
 	return &Reader{br: br}
 }
@@ -72,7 +107,10 @@ func (zr *Reader) Next() (*FileHeader, io.Reader, error) {
 		return nil, nil, zr.err
 	}
 	if zr.curr != nil && !zr.curr.drained {
-		if err := zr.curr.drain(); err != nil {
+		if zr.drainBuf == nil {
+			zr.drainBuf = make([]byte, 64<<10)
+		}
+		if err := zr.curr.drain(zr.drainBuf); err != nil {
 			zr.err = err
 			return nil, nil, err
 		}
@@ -109,7 +147,7 @@ func (zr *Reader) Next() (*FileHeader, io.Reader, error) {
 		return nil, nil, err
 	}
 
-	er, err := newEntryReader(zr.br, hdr)
+	er, err := zr.newEntryReader(hdr)
 	if err != nil {
 		zr.err = err
 		return nil, nil, err
@@ -130,11 +168,13 @@ func (zr *Reader) readHeader() (*FileHeader, error) {
 	cSize, uSize := uint64(le.Uint32(buf[14:18])), uint64(le.Uint32(buf[18:22]))
 	nLen, xLen := le.Uint16(buf[22:24]), le.Uint16(buf[24:26])
 
-	name := make([]byte, nLen)
+	// Reused across entries: the name is copied into a string below and the
+	// extra field is only parsed, so neither is retained.
+	name := zr.grow(int(nLen))
 	if _, err := io.ReadFull(zr.br, name); err != nil {
 		return nil, err
 	}
-	extra := make([]byte, xLen)
+	extra := zr.growExtra(int(xLen))
 	if _, err := io.ReadFull(zr.br, extra); err != nil {
 		return nil, err
 	}
@@ -155,38 +195,63 @@ type entryReader struct {
 	br      *bufio.Reader
 	hdr     *FileHeader
 	r       io.Reader
+	store   storeDescReader
 	hasDesc bool
-	crc     hash.Hash32
+	shared  bool // r is the Reader's pooled decompressor, so do not close it
+	raw     bool // r yields compressed bytes; the caller decodes and checks CRC
+	crc     uint32
 	drained bool
 }
 
-func newEntryReader(br *bufio.Reader, fh *FileHeader) (*entryReader, error) {
+func (zr *Reader) newEntryReader(fh *FileHeader) (*entryReader, error) {
 	// Sizes come from the archive, so a hostile value must be rejected rather
 	// than wrap negative and make io.LimitReader read the entry as empty.
 	if fh.CompressedSize > math.MaxInt64 {
 		return nil, fmt.Errorf("%w: compressed size %d out of range", ErrFormat, fh.CompressedSize)
 	}
 
-	er := &entryReader{
-		br:      br,
+	er := &zr.entry
+	*er = entryReader{
+		br:      zr.br,
 		hdr:     fh,
 		hasDesc: (fh.Flags & flagDataDesc) != 0,
-		crc:     crc32.NewIEEE(),
+	}
+
+	// Bounded when the size is known, so the decompressor cannot read past
+	// this entry into the next one.
+	src := io.Reader(zr.br)
+	if !er.hasDesc && fh.CompressedSize > 0 {
+		zr.limit = io.LimitedReader{R: zr.br, N: int64(fh.CompressedSize)}
+		src = &zr.limit
+	}
+
+	// A deflate entry of known size can be handed over still compressed, so
+	// the caller may decode it on another goroutine. CRC verification moves
+	// to the caller with it.
+	if zr.raw && fh.Method == MethodDeflate && !er.hasDesc && fh.CompressedSize > 0 {
+		er.r = src
+		er.raw = true
+		return er, nil
 	}
 
 	switch fh.Method {
 	case MethodStore:
 		if er.hasDesc && fh.CompressedSize == 0 {
-			er.r = &storeDescReader{br: br}
+			er.store = storeDescReader{br: zr.br}
+			er.r = &er.store
 		} else {
-			er.r = io.LimitReader(br, int64(fh.CompressedSize))
+			er.r = src
 		}
 	case MethodDeflate:
-		if er.hasDesc || fh.CompressedSize == 0 {
-			er.r = flate.NewReader(br)
-		} else {
-			er.r = flate.NewReader(io.LimitReader(br, int64(fh.CompressedSize)))
+		// Reusing the decompressor keeps its 32KiB window and Huffman tables
+		// off the allocator once per archive instead of once per entry.
+		if zr.flate == nil {
+			zr.flate = flate.NewReader(src)
+		} else if err := zr.flate.(flate.Resetter).Reset(src, nil); err != nil {
+			return nil, err
 		}
+		er.r = zr.flate
+		er.shared = true
 	default:
 		return nil, fmt.Errorf("%w: %d", ErrMethod, fh.Method)
 	}
@@ -198,12 +263,14 @@ func (er *entryReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n, err := er.r.Read(p)
-	if n > 0 {
-		_, _ = er.crc.Write(p[:n]) // hash.Hash.Write never returns an error
+	if n > 0 && !er.raw {
+		// Direct table update avoids the hash.Hash32 interface call per read;
+		// Update dispatches to the hardware-accelerated IEEE path.
+		er.crc = crc32.Update(er.crc, crc32.IEEETable, p[:n])
 	}
 	if errors.Is(err, io.EOF) {
 		er.drained = true
-		if c, ok := er.r.(io.Closer); ok {
+		if c, ok := er.r.(io.Closer); ok && !er.shared {
 			_ = c.Close()
 		}
 		if er.hasDesc {
@@ -211,7 +278,7 @@ func (er *entryReader) Read(p []byte) (int, error) {
 				return n, err
 			}
 		}
-		if er.hdr.CRC32 != 0 && er.hdr.CRC32 != er.crc.Sum32() {
+		if !er.raw && er.hdr.CRC32 != 0 && er.hdr.CRC32 != er.crc {
 			return n, fmt.Errorf("%w: entry %s", ErrChecksum, er.hdr.Name)
 		}
 		return n, io.EOF
@@ -219,8 +286,7 @@ func (er *entryReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (er *entryReader) drain() error {
-	buf := make([]byte, 32*1024)
+func (er *entryReader) drain(buf []byte) error {
 	for {
 		if _, err := er.Read(buf); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -252,13 +318,27 @@ func (er *entryReader) readDesc() error {
 }
 
 type storeDescReader struct {
-	br   *bufio.Reader
-	done bool
+	br      *bufio.Reader
+	emitted int64
+	done    bool
+}
+
+// descriptorAt reports whether a genuine data descriptor begins at idx by
+// checking its uncompressed-size field against the bytes emitted so far.
+// File content can contain the signature by chance -- roughly once per 4GiB
+// of random data -- and without this check that coincidence silently
+// truncates the entry.
+func (s *storeDescReader) descriptorAt(idx int) bool {
+	const descLen = 16 // signature + crc32 + compressed + uncompressed
+	buf, err := s.br.Peek(idx + descLen)
+	if err != nil || len(buf) < idx+descLen {
+		return true // at end of stream there is nothing left to confuse it
+	}
+	return int64(le.Uint32(buf[idx+12:idx+16])) == s.emitted+int64(idx)
 }
 
 // Read scans the buffered window for the data-descriptor signature to find
-// where this STORE entry ends, since its size isn't known up front. This can
-// misfire if the raw file content itself contains those 4 bytes.
+// where this STORE entry ends, since its size isn't known up front.
 func (s *storeDescReader) Read(p []byte) (int, error) {
 	if s.done {
 		return 0, io.EOF
@@ -267,13 +347,25 @@ func (s *storeDescReader) Read(p []byte) (int, error) {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return 0, err
 	}
-	if idx := bytes.Index(buf, dataDescSig); idx >= 0 {
+
+	for search := 0; ; {
+		idx := bytes.Index(buf[search:], dataDescSig)
+		if idx < 0 {
+			break
+		}
+		idx += search
+		if !s.descriptorAt(idx) {
+			search = idx + 1 // coincidence in the data; keep looking
+			continue
+		}
 		if idx == 0 {
 			s.done = true
 			return 0, io.EOF
 		}
-		return s.br.Read(p[:min(len(p), idx)])
+		return s.emit(p, idx)
 	}
+	// Stop three bytes short so a signature straddling the window boundary is
+	// not missed on the next pass.
 	safe := len(buf) - 3
 	if safe <= 0 {
 		b, err := s.br.ReadByte()
@@ -281,9 +373,16 @@ func (s *storeDescReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		p[0] = b
+		s.emitted++
 		return 1, nil
 	}
-	return s.br.Read(p[:min(len(p), safe)])
+	return s.emit(p, safe)
+}
+
+func (s *storeDescReader) emit(p []byte, limit int) (int, error) {
+	n, err := s.br.Read(p[:min(len(p), limit)])
+	s.emitted += int64(n)
+	return n, err
 }
 
 func parseZip64(extra []byte, uSize, cSize uint64) (uint64, uint64) {

@@ -171,6 +171,46 @@ func TestStreamZipReader_StoreWithDataDescriptor(t *testing.T) {
 	}
 }
 
+// A Store entry with a data descriptor has no size up front, so the end is
+// found by scanning for the descriptor signature. Content containing those
+// bytes by chance must not truncate the entry -- this happens roughly once
+// per 4GiB of random data.
+func TestStreamZipReader_StoreContentContainingDescriptorSignature(t *testing.T) {
+	payload := bytes.Join([][]byte{
+		bytes.Repeat([]byte("before."), 300),
+		{0x50, 0x4b, 0x07, 0x08}, // PK\x07\x08 embedded in the file's own data
+		bytes.Repeat([]byte("after."), 300),
+		{0x50, 0x4b, 0x07, 0x08},
+		bytes.Repeat([]byte("tail."), 300),
+	}, nil)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "tricky.bin", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	zr := NewReader(bytes.NewReader(zipBuf.Bytes()))
+	hdr, r, err := zr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll(%s): %v", hdr.Name, err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("truncated at an embedded signature: got %d bytes, want %d", len(got), len(payload))
+	}
+}
+
 func TestStreamZipReader_DrainSkippedFiles(t *testing.T) {
 	var zipBuf bytes.Buffer
 	zw := zip.NewWriter(&zipBuf)

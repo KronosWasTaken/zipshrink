@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,9 @@ type Result struct {
 	BytesTotal int64
 	SpaceSaved int64
 	Duration   time.Duration
+	// Sparse reports whether space was reclaimed by punching holes in place
+	// rather than by rewriting the archive.
+	Sparse bool
 }
 
 const (
@@ -39,10 +43,16 @@ const (
 )
 
 // entry is the format-agnostic member view shared by the ZIP and RAR paths.
+// raw, crc and csize are set only when the reader yields compressed bytes for
+// a decoder goroutine to handle.
 type entry struct {
 	Name     string
 	IsDir    bool
 	Modified time.Time
+	raw      bool
+	crc      uint32
+	csize    uint64
+	usize    uint64
 }
 
 // Extract extracts archive entries to DestinationDir while shrinking the source file in chunks.
@@ -57,17 +67,32 @@ func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	defer closeStream(stream, &err)
 
 	zr := streamzip.NewReader(stream)
-	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, func() (entry, io.Reader, error) {
+	zr.SetRaw(true)
+	dec := newDecoders()
+
+	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, dec, func() (entry, io.Reader, error) {
 		hdr, r, err := zr.Next()
 		if err != nil {
 			return entry{}, nil, err
 		}
-		return entry{Name: hdr.Name, IsDir: hdr.IsDir(), Modified: hdr.Modified}, r, nil
+		return entry{
+			Name:     hdr.Name,
+			IsDir:    hdr.IsDir(),
+			Modified: hdr.Modified,
+			raw:      zr.Raw(),
+			crc:      hdr.CRC32,
+			csize:    hdr.CompressedSize,
+			usize:    hdr.UncompressedSize,
+		}, r, nil
 	})
+	// Workers must finish before the archive is removed or a result reported.
+	if derr := dec.close(); derr != nil && err == nil {
+		err = derr
+	}
 	if err != nil {
 		return nil, err
 	}
-	return buildResult(opts.DeleteArchive, fi.Size(), count, totalBytes, start), nil
+	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }
 
 func closeStream(stream io.Closer, err *error) {
@@ -89,8 +114,16 @@ func openTruncatedSource(opts Options) (fi os.FileInfo, dest string, stream *tru
 	return fi, dest, stream, err
 }
 
-// next reports io.EOF when the archive is exhausted.
-func extractLoop(ctx context.Context, dest string, onFile func(string), next func() (entry, io.Reader, error)) (count int, totalBytes int64, err error) {
+// next reports io.EOF when the archive is exhausted. dec may be nil, in which
+// case every entry is decoded in stream order.
+func extractLoop(ctx context.Context, dest string, onFile func(string), dec *decoders, next func() (entry, io.Reader, error)) (count int, totalBytes int64, err error) {
+	w := newAsyncWriter(dest)
+	defer func() {
+		if cerr := w.close(); cerr != nil && err == nil {
+			err = fmt.Errorf("extractor: write: %w", cerr)
+		}
+	}()
+
 	for {
 		if err := ctx.Err(); err != nil {
 			return count, totalBytes, err
@@ -104,23 +137,71 @@ func extractLoop(ctx context.Context, dest string, onFile func(string), next fun
 			return count, totalBytes, fmt.Errorf("extractor: next: %w", err)
 		}
 
-		written, err := processEntry(dest, e, r, onFile)
+		target := filepath.Join(dest, e.Name)
+		if !isSafe(dest, target) {
+			return count, totalBytes, fmt.Errorf("extractor: %w: %s", ErrZipSlip, e.Name)
+		}
+
+		if e.IsDir {
+			if err := w.mkdirAll(target); err != nil {
+				return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
+			}
+			continue
+		}
+		if onFile != nil {
+			onFile(e.Name)
+		}
+
+		// A compressed entry small enough to buffer goes to a decoder
+		// goroutine; everything else is decoded here in stream order. The
+		// directory is created here either way, since only this goroutine
+		// may touch the cache.
+		if e.raw && dec != nil {
+			if err := w.mkdirAll(filepath.Dir(target)); err != nil {
+				return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
+			}
+			queued, err := dec.submit(target, e, r)
+			if err != nil {
+				return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
+			}
+			if queued {
+				count++
+				totalBytes += int64(min(e.usize, math.MaxInt64))
+				continue
+			}
+			written, err := inflateEntry(target, e, r)
+			if err != nil {
+				return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
+			}
+			count++
+			totalBytes += written
+			continue
+		}
+
+		if err := w.mkdirAll(filepath.Dir(target)); err != nil {
+			return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
+		}
+		written, err := w.stream(target, e.Modified, r)
 		if err != nil {
 			return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
 		}
-		if !e.IsDir {
-			count++
-			totalBytes += written
-		}
+		count++
+		totalBytes += written
 	}
 }
 
-func buildResult(deleteArchive bool, archiveSize int64, count int, totalBytes int64, start time.Time) *Result {
+func buildResult(opts Options, fi os.FileInfo, stream *truncator.Truncator, count int, totalBytes int64, start time.Time) *Result {
 	var spaceSaved int64
-	if deleteArchive {
-		spaceSaved = archiveSize
+	if opts.DeleteArchive {
+		spaceSaved = fi.Size()
 	}
-	return &Result{FilesCount: count, BytesTotal: totalBytes, SpaceSaved: spaceSaved, Duration: time.Since(start)}
+	return &Result{
+		FilesCount: count,
+		BytesTotal: totalBytes,
+		SpaceSaved: spaceSaved,
+		Duration:   time.Since(start),
+		Sparse:     stream.Sparse(),
+	}
 }
 
 func resolveDestination(sourcePath, customDest string) (string, error) {
@@ -138,54 +219,12 @@ func resolveDestination(sourcePath, customDest string) (string, error) {
 	return absDest, nil
 }
 
-func processEntry(dest string, e entry, r io.Reader, onFile func(string)) (int64, error) {
-	target := filepath.Clean(filepath.Join(dest, e.Name))
-	if !isSafe(dest, target) {
-		return 0, fmt.Errorf("%w: %s", ErrZipSlip, e.Name)
-	}
-	if e.IsDir {
-		return 0, os.MkdirAll(target, defaultDirMode)
-	}
-	if onFile != nil {
-		onFile(e.Name)
-	}
-	return writeFile(target, e, r)
-}
-
-func writeFile(target string, e entry, r io.Reader) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(target), defaultDirMode); err != nil {
-		return 0, err
-	}
-
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFileMode)
-	if err != nil {
-		return 0, err
-	}
-
-	n, copyErr := io.Copy(f, r)
-	closeErr := f.Close()
-
-	if copyErr != nil {
-		_ = os.Remove(target) // Clean up corrupted partial write
-		return n, copyErr
-	}
-	if closeErr != nil {
-		return n, closeErr
-	}
-
-	if !e.Modified.IsZero() {
-		_ = os.Chtimes(target, e.Modified, e.Modified)
-	}
-	return n, nil
-}
-
+// target has already been through filepath.Join, which resolves any "..",
+// so an escape can no longer be hiding inside it and a prefix test is both
+// sufficient and allocation-free.
 func isSafe(base, target string) bool {
 	if base == target {
 		return true
 	}
-	rel, err := filepath.Rel(base, target)
-	if err != nil {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+	return strings.HasPrefix(target, base+string(filepath.Separator))
 }

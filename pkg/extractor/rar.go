@@ -25,7 +25,7 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 		return nil, fmt.Errorf("extractor: rar: %w", err)
 	}
 
-	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, func() (entry, io.Reader, error) {
+	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, nil, func() (entry, io.Reader, error) {
 		hdr, err := rr.Next()
 		if err != nil {
 			return entry{}, nil, err
@@ -35,5 +35,5 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildResult(opts.DeleteArchive, fi.Size(), count, totalBytes, start), nil
+	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }

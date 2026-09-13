@@ -33,7 +33,7 @@ func run() error {
 	)
 
 	flag.StringVar(&dest, "o", "", "Destination directory")
-	flag.StringVar(&chunkStr, "c", "100MB", "Chunk threshold (e.g. 50MB, 100MB, 512MB)")
+	flag.StringVar(&chunkStr, "c", "auto", "Chunk threshold: auto, or a size such as 512MB")
 	flag.BoolVar(&keep, "k", false, "Keep source archive")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.Usage = func() {
@@ -48,7 +48,7 @@ func run() error {
 	}
 
 	archive := flag.Arg(0)
-	chunkBytes, err := parseBytes(chunkStr)
+	chunkBytes, err := resolveChunk(chunkStr, archive)
 	if err != nil {
 		return err
 	}
@@ -94,8 +94,43 @@ func run() error {
 	fmt.Printf("\nDone. Extracted %d files (%s) in %s\n", res.FilesCount, formatBytes(res.BytesTotal), res.Duration.Round(time.Millisecond))
 	if !keep {
 		fmt.Printf("Space saved: %s\n", formatBytes(res.SpaceSaved))
+		if verbose {
+			reclaim := "rewrite (chunk size affects speed)"
+			if res.Sparse {
+				reclaim = "sparse hole-punch (in place)"
+			}
+			fmt.Printf("Reclaim:     %s\n", reclaim)
+		}
 	}
 	return nil
+}
+
+const (
+	// Reclaiming in a fixed number of steps keeps the per-reclaim cost from
+	// dominating on large archives while holding back only a few percent of
+	// the archive's space.
+	autoChunkDivisor = 16
+	autoChunkMin     = 64 << 20
+	autoChunkMax     = 2 << 30
+	// Past this, always take the largest step: the space held back stops
+	// mattering relative to the archive.
+	autoChunkMaxAt = 10 << 30
+)
+
+// resolveChunk sizes the reclaim step relative to the archive unless the user
+// pinned it, since a fixed step is far too small for a large archive.
+func resolveChunk(spec, archive string) (int64, error) {
+	if !strings.EqualFold(spec, "auto") {
+		return parseBytes(spec)
+	}
+	fi, err := os.Stat(archive)
+	if err != nil {
+		return 0, err
+	}
+	if fi.Size() >= autoChunkMaxAt {
+		return autoChunkMax, nil
+	}
+	return min(max(fi.Size()/autoChunkDivisor, autoChunkMin), autoChunkMax), nil
 }
 
 var byteSizePattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*([A-Z]*)$`)
