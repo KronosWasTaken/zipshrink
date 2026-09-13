@@ -217,10 +217,11 @@ func (zr *Reader) newEntryReader(fh *FileHeader) (*entryReader, error) {
 		hasDesc: (fh.Flags & flagDataDesc) != 0,
 	}
 
-	// Bounded when the size is known, so the decompressor cannot read past
-	// this entry into the next one.
+	// Bounded whenever the size is known, so this entry cannot read on into
+	// the next one. A zero size must bound too: directory entries carry one,
+	// and leaving them unbounded swallows the rest of the archive.
 	src := io.Reader(zr.br)
-	if !er.hasDesc && fh.CompressedSize > 0 {
+	if !er.hasDesc {
 		zr.limit = io.LimitedReader{R: zr.br, N: int64(fh.CompressedSize)}
 		src = &zr.limit
 	}

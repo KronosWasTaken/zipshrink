@@ -3,8 +3,10 @@ package streamzip
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"testing"
 )
@@ -208,6 +210,55 @@ func TestStreamZipReader_StoreContentContainingDescriptorSignature(t *testing.T)
 	}
 	if !bytes.Equal(got, payload) {
 		t.Errorf("truncated at an embedded signature: got %d bytes, want %d", len(got), len(payload))
+	}
+}
+
+// Directory entries are stored with no data descriptor and a zero size. If
+// such an entry is not bounded to zero bytes it reads on into the rest of the
+// archive, which silently yields an empty extraction.
+func TestStreamZipReader_ZeroLengthEntryIsBounded(t *testing.T) {
+	var buf bytes.Buffer
+	writeLocal := func(name string, method uint16, body []byte) {
+		hdr := make([]byte, 30)
+		binary.LittleEndian.PutUint32(hdr[0:4], 0x04034b50)
+		binary.LittleEndian.PutUint16(hdr[8:10], method)
+		binary.LittleEndian.PutUint32(hdr[14:18], crc32.ChecksumIEEE(body))
+		binary.LittleEndian.PutUint32(hdr[18:22], uint32(len(body)))
+		binary.LittleEndian.PutUint32(hdr[22:26], uint32(len(body)))
+		binary.LittleEndian.PutUint16(hdr[26:28], uint16(len(name)))
+		buf.Write(hdr)
+		buf.WriteString(name)
+		buf.Write(body)
+	}
+
+	payload := []byte("content that must survive the directory entry")
+	writeLocal("adir/", 0, nil) // zero-length stored directory
+	writeLocal("adir/file.txt", 0, payload)
+	binary.Write(&buf, binary.LittleEndian, uint32(0x02014b50))
+
+	zr := NewReader(bytes.NewReader(buf.Bytes()))
+
+	hdr, r, err := zr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hdr.IsDir() {
+		t.Fatalf("first entry %q should be a directory", hdr.Name)
+	}
+	if n, _ := io.Copy(io.Discard, r); n != 0 {
+		t.Fatalf("directory entry yielded %d bytes, want 0", n)
+	}
+
+	hdr, r, err = zr.Next()
+	if err != nil {
+		t.Fatalf("second entry: %v", err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("got %q, want %q", got, payload)
 	}
 }
 
