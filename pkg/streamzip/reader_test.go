@@ -249,7 +249,7 @@ func TestStreamZipReader_ZeroLengthEntryIsBounded(t *testing.T) {
 		t.Fatalf("directory entry yielded %d bytes, want 0", n)
 	}
 
-	hdr, r, err = zr.Next()
+	_, r, err = zr.Next()
 	if err != nil {
 		t.Fatalf("second entry: %v", err)
 	}
