@@ -22,12 +22,13 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	}
 	defer closeStream(stream, &err)
 
-	rr, err := rardecode.NewReader(newProgressReader(stream, fi.Size(), opts.OnProgress))
+	out := new(written)
+	rr, err := rardecode.NewReader(newProgressReader(stream, fi.Size(), out, opts.OnProgress))
 	if err != nil {
 		return nil, fmt.Errorf("extractor: rar: %w", err)
 	}
 
-	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, nil, func() (entry, io.Reader, error) {
+	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, nil, out, func() (entry, io.Reader, error) {
 		hdr, err := rr.Next()
 		if err != nil {
 			return entry{}, nil, err
@@ -40,7 +41,7 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	// Parsing stops at the central directory, so the reader never sees EOF;
 	// snap to complete so callers always finish at 100%.
 	if opts.OnProgress != nil {
-		opts.OnProgress(fi.Size(), fi.Size())
+		opts.OnProgress(fi.Size(), fi.Size(), out.load())
 	}
 	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }
