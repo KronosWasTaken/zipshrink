@@ -28,15 +28,17 @@ type asyncWriter struct {
 	free chan []byte
 	done chan error
 	dirs map[string]struct{}
+	out  *written
 }
 
-func newAsyncWriter(dest string) *asyncWriter {
+func newAsyncWriter(dest string, out *written) *asyncWriter {
 	w := &asyncWriter{
 		dest: dest,
 		ops:  make(chan writeOp, writeBufs),
 		free: make(chan []byte, writeBufs),
 		done: make(chan error, 1),
 		dirs: map[string]struct{}{dest: {}},
+		out:  out,
 	}
 	for range writeBufs {
 		w.free <- make([]byte, writeBufSize)
@@ -90,7 +92,8 @@ func (w *asyncWriter) loop() {
 			}
 			f = file
 		}
-		_, err := f.Write(op.data)
+		n, err := f.Write(op.data)
+		w.out.add(int64(n))
 		w.free <- op.data[:writeBufSize]
 		if err != nil {
 			fail(err)

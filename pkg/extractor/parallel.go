@@ -35,6 +35,7 @@ type decodeJob struct {
 type decoders struct {
 	jobs chan decodeJob
 	free chan []byte
+	out  *written
 	wg   sync.WaitGroup
 	mu   sync.Mutex
 	err  error
@@ -44,11 +45,12 @@ func workerCount() int {
 	return max(1, min(runtime.GOMAXPROCS(0)-1, maxWorkers))
 }
 
-func newDecoders() *decoders {
+func newDecoders(out *written) *decoders {
 	n := workerCount()
 	d := &decoders{
 		jobs: make(chan decodeJob, n),
 		free: make(chan []byte, n+2),
+		out:  out,
 	}
 	for range n + 2 {
 		d.free <- make([]byte, maxParallelEntry)
@@ -73,7 +75,7 @@ func (d *decoders) worker() {
 		src.Reset(job.buf)
 		if err := fr.(flate.Resetter).Reset(src, nil); err != nil {
 			d.fail(job.name, err)
-		} else if err := writeDecoded(job, fr); err != nil {
+		} else if err := writeDecoded(job, fr, d.out); err != nil {
 			d.fail(job.name, err)
 		}
 		d.free <- job.buf[:maxParallelEntry]
@@ -82,7 +84,7 @@ func (d *decoders) worker() {
 
 // inflateEntry decodes a compressed entry too large to buffer, in stream
 // order. Written synchronously so a checksum failure can still unlink it.
-func inflateEntry(path string, e entry, raw io.Reader) (int64, error) {
+func inflateEntry(path string, e entry, raw io.Reader, out *written) (int64, error) {
 	fr := flate.NewReader(raw)
 	defer func() { _ = fr.Close() }()
 
@@ -92,7 +94,7 @@ func inflateEntry(path string, e entry, raw io.Reader) (int64, error) {
 	}
 
 	sum := crc32.NewIEEE()
-	n, copyErr := io.Copy(io.MultiWriter(f, sum), fr)
+	n, copyErr := io.Copy(io.MultiWriter(f, sum, out), fr)
 	closeErr := f.Close()
 
 	switch {
@@ -112,14 +114,14 @@ func inflateEntry(path string, e entry, raw io.Reader) (int64, error) {
 	return n, nil
 }
 
-func writeDecoded(job decodeJob, r io.Reader) error {
+func writeDecoded(job decodeJob, r io.Reader, out *written) error {
 	f, err := os.OpenFile(job.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, defaultFileMode)
 	if err != nil {
 		return err
 	}
 
 	sum := crc32.NewIEEE()
-	_, copyErr := io.Copy(io.MultiWriter(f, sum), r)
+	_, copyErr := io.Copy(io.MultiWriter(f, sum, out), r)
 	closeErr := f.Close()
 
 	switch {

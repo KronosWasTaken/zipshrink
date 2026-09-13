@@ -25,9 +25,10 @@ type Options struct {
 	DeleteArchive  bool
 	OnShift        func(freed, remaining int64)
 	OnFile         func(name string)
-	// OnProgress reports archive bytes consumed against the total, rate
-	// limited to a few calls a second. Rendering is left to the caller.
-	OnProgress func(done, total int64)
+	// OnProgress reports archive bytes consumed against the total, plus bytes
+	// written so far, rate limited to a few calls a second. Rendering is left
+	// to the caller.
+	OnProgress func(done, total, extracted int64)
 }
 
 type Result struct {
@@ -69,11 +70,12 @@ func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	// must reach the caller rather than be reported as a clean run.
 	defer closeStream(stream, &err)
 
-	zr := streamzip.NewReader(newProgressReader(stream, fi.Size(), opts.OnProgress))
+	out := new(written)
+	zr := streamzip.NewReader(newProgressReader(stream, fi.Size(), out, opts.OnProgress))
 	zr.SetRaw(true)
-	dec := newDecoders()
+	dec := newDecoders(out)
 
-	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, dec, func() (entry, io.Reader, error) {
+	count, totalBytes, err := extractLoop(ctx, dest, opts.OnFile, dec, out, func() (entry, io.Reader, error) {
 		hdr, r, err := zr.Next()
 		if err != nil {
 			return entry{}, nil, err
@@ -98,7 +100,7 @@ func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	// Parsing stops at the central directory, so the reader never sees EOF;
 	// snap to complete so callers always finish at 100%.
 	if opts.OnProgress != nil {
-		opts.OnProgress(fi.Size(), fi.Size())
+		opts.OnProgress(fi.Size(), fi.Size(), out.load())
 	}
 	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }
@@ -124,8 +126,8 @@ func openTruncatedSource(opts Options) (fi os.FileInfo, dest string, stream *tru
 
 // next reports io.EOF when the archive is exhausted. dec may be nil, in which
 // case every entry is decoded in stream order.
-func extractLoop(ctx context.Context, dest string, onFile func(string), dec *decoders, next func() (entry, io.Reader, error)) (count int, totalBytes int64, err error) {
-	w := newAsyncWriter(dest)
+func extractLoop(ctx context.Context, dest string, onFile func(string), dec *decoders, out *written, next func() (entry, io.Reader, error)) (count int, totalBytes int64, err error) {
+	w := newAsyncWriter(dest, out)
 	defer func() {
 		if cerr := w.close(); cerr != nil && err == nil {
 			err = fmt.Errorf("extractor: write: %w", cerr)
@@ -177,7 +179,7 @@ func extractLoop(ctx context.Context, dest string, onFile func(string), dec *dec
 				totalBytes += int64(min(e.usize, math.MaxInt64))
 				continue
 			}
-			written, err := inflateEntry(target, e, r)
+			written, err := inflateEntry(target, e, r, out)
 			if err != nil {
 				return count, totalBytes, fmt.Errorf("extractor: %s: %w", e.Name, err)
 			}
