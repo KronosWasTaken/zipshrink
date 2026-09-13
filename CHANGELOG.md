@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/KronosWasTaken/zipshrink/compare/v1.1.0...v1.2.0) (2026-09-13)
+
+
+### Features
+
+* show extraction progress ([85dc2bf](https://github.com/KronosWasTaken/zipshrink/commit/85dc2bf76cf570ed87b730140cd79b5eea8aba6d))
+
+
+### Bug Fixes
+
+* **ci:** pin cosign-installer to an existing version tag ([ee38927](https://github.com/KronosWasTaken/zipshrink/commit/ee3892770110a0bd01236d9365e4639813d578cf))
+* **rar:** stop dropping match bytes at the decode window wrap ([7f36bb8](https://github.com/KronosWasTaken/zipshrink/commit/7f36bb8d7b6e2fc91c9806d9bf00e2710e828551))
+
 ## [1.1.0](https://github.com/KronosWasTaken/zipshrink/compare/v1.0.3...v1.1.0) (2026-09-13)
 
 
