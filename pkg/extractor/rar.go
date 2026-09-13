@@ -20,7 +20,7 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	}
 	defer closeStream(stream, &err)
 
-	rr, err := rardecode.NewReader(stream)
+	rr, err := rardecode.NewReader(newProgressReader(stream, fi.Size(), opts.OnProgress))
 	if err != nil {
 		return nil, fmt.Errorf("extractor: rar: %w", err)
 	}
@@ -34,6 +34,11 @@ func ExtractRAR(ctx context.Context, opts Options) (_ *Result, err error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Parsing stops at the central directory, so the reader never sees EOF;
+	// snap to complete so callers always finish at 100%.
+	if opts.OnProgress != nil {
+		opts.OnProgress(fi.Size(), fi.Size())
 	}
 	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }

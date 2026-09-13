@@ -63,19 +63,25 @@ func run() error {
 	fmt.Printf("Chunk Size:  %s\n", formatBytes(chunkBytes))
 	fmt.Printf("Auto-delete: %v\n", !keep)
 
+	bar := newProgressBar()
 	opts := extractor.Options{
 		SourcePath:     archive,
 		DestinationDir: dest,
 		ChunkSize:      chunkBytes,
 		DeleteArchive:  !keep,
 		OnShift: func(freed, remaining int64) {
-			fmt.Printf("  Reclaimed %s (archive size now %s)\n", formatBytes(freed), formatBytes(remaining))
+			if verbose {
+				bar.clear()
+				fmt.Printf("  Reclaimed %s (archive size now %s)\n", formatBytes(freed), formatBytes(remaining))
+			}
 		},
 		OnFile: func(name string) {
 			if verbose {
+				bar.clear()
 				fmt.Printf("  -> %s\n", name)
 			}
 		},
+		OnProgress: bar.update,
 	}
 
 	var res *extractor.Result
@@ -87,6 +93,7 @@ func run() error {
 	default:
 		return fmt.Errorf("unsupported archive format %q (supported: .zip, .rar)", ext)
 	}
+	bar.done()
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,9 @@ type Options struct {
 	DeleteArchive  bool
 	OnShift        func(freed, remaining int64)
 	OnFile         func(name string)
+	// OnProgress reports archive bytes consumed against the total, rate
+	// limited to a few calls a second. Rendering is left to the caller.
+	OnProgress func(done, total int64)
 }
 
 type Result struct {
@@ -66,7 +69,7 @@ func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	// must reach the caller rather than be reported as a clean run.
 	defer closeStream(stream, &err)
 
-	zr := streamzip.NewReader(stream)
+	zr := streamzip.NewReader(newProgressReader(stream, fi.Size(), opts.OnProgress))
 	zr.SetRaw(true)
 	dec := newDecoders()
 
@@ -91,6 +94,11 @@ func Extract(ctx context.Context, opts Options) (_ *Result, err error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Parsing stops at the central directory, so the reader never sees EOF;
+	// snap to complete so callers always finish at 100%.
+	if opts.OnProgress != nil {
+		opts.OnProgress(fi.Size(), fi.Size())
 	}
 	return buildResult(opts, fi, stream, count, totalBytes, start), nil
 }
